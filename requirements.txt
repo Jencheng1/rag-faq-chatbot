@@ -1,0 +1,8 @@
+flask==3.1.0
+openai==1.72.0
+faiss-cpu==1.10.0
+PyPDF2==3.0.1
+beautifulsoup4==4.13.3
+requests==2.32.3
+langchain-community==0.3.21
+langchain-text-splitters==0.3.8
