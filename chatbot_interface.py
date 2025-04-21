@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
+
 import json
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from vector_database import VectorDatabase
@@ -107,7 +110,10 @@ Answer:"""
 app = Flask(__name__, static_folder='static')
 
 # Initialize the chatbot
-api_key = os.environ.get("OPENAI_API_KEY", "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")
+api_key = os.environ.get("OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it before running the application.")
+
 chatbot = None
 
 @app.route('/')
@@ -128,7 +134,7 @@ def chat_api():
     # Initialize the chatbot if not already done
     if chatbot is None:
         try:
-            chatbot = ChatbotInterface('/home/ubuntu/leechy_chatbot/vector_db', api_key)
+            chatbot = ChatbotInterface('vector_db', api_key)
         except Exception as e:
             return jsonify({"error": f"Failed to initialize chatbot: {str(e)}"}), 500
     
@@ -151,4 +157,4 @@ if __name__ == '__main__':
     os.makedirs('static', exist_ok=True)
     
     # Run the Flask application
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5002, debug=True)

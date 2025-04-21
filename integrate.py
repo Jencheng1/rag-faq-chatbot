@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
+
 import sys
 import json
 from pdf_processor import PDFProcessor
@@ -17,7 +20,12 @@ def main():
     vector_db_dir = os.path.join(base_dir, "vector_db")
     
     # Get OpenAI API key
-    api_key = os.environ.get("OPENAI_API_KEY", "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")
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it before running the application.")
+    
+    # Initialize vector database
+    vector_db = VectorDatabase(api_key)
     
     # Step 1: Process PDF
     print("\n1. Processing PDF...")
@@ -49,10 +57,6 @@ def main():
     # Step 3: Create vector database
     print("\n3. Creating vector database...")
     # Use mock embeddings to avoid API quota issues
-    vector_db = VectorDatabase(api_key, use_mock=True)
-    
-    # Combine PDF and website content
-    print("  - Combining PDF and website content...")
     vector_db.combine_sources(
         os.path.join(base_dir, "faq_chunks.json"),
         os.path.join(base_dir, "website_chunks.json")

@@ -2,6 +2,7 @@ import os
 import PyPDF2
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import json
+import re
 
 class PDFProcessor:
     def __init__(self, pdf_path):
@@ -30,7 +31,11 @@ class PDFProcessor:
             text = ""
             for page_num in range(num_pages):
                 page = pdf_reader.pages[page_num]
-                text += page.extract_text() + "\n\n"
+                # Extract text and normalize spaces
+                page_text = page.extract_text()
+                # Replace multiple spaces and newlines with single space
+                page_text = ' '.join(page_text.split())
+                text += page_text + " "
                 
             self.raw_text = text
             return text
@@ -48,24 +53,44 @@ class PDFProcessor:
         if not self.raw_text:
             self.extract_text()
             
-        # Remove excessive whitespace
-        text = " ".join(self.raw_text.split())
+        # Clean up the text
+        text = self.raw_text
         
-        # Replace multiple spaces with single space
+        # Fix common OCR issues
+        replacements = {
+            'spor ts': 'sports',
+            'machiner y': 'machinery',
+            'furnitur e': 'furniture',
+            'transpor tation': 'transportation',
+            'electr onics': 'electronics',
+            'addr ess': 'address',
+            'pro\ufb01le': 'profile',
+            'arriv e': 'arrive',
+            'insur ed': 'insured',
+            '\u25cf': '-',  # bullet points
+            '\u201c': '"',  # smart quotes
+            '\u201d': '"'
+        }
+        
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        
+        # Format Q&A pairs consistently
+        text = text.replace('Q:', 'Question:')
+        text = text.replace('A:', 'Answer:')
+        
+        # Clean up any remaining whitespace issues
         text = ' '.join(text.split())
-        
-        # Remove any non-standard characters if needed
-        # Add more cleaning steps as needed based on the PDF content
         
         self.processed_text = text
         return text
     
-    def split_into_chunks(self, chunk_size=1000, chunk_overlap=200):
+    def split_into_chunks(self, chunk_size=500, chunk_overlap=50):
         """
-        Split the processed text into chunks suitable for embedding.
+        Split the processed text into chunks for better retrieval.
         
         Args:
-            chunk_size (int): Maximum size of each chunk
+            chunk_size (int): Size of each chunk
             chunk_overlap (int): Overlap between chunks
             
         Returns:
@@ -73,16 +98,29 @@ class PDFProcessor:
         """
         if not self.processed_text:
             self.clean_text()
-            
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            length_function=len,
-            separators=["\n\n", "\n", ". ", " ", ""]
-        )
         
-        self.chunks = text_splitter.split_text(self.processed_text)
-        return self.chunks
+        chunks = []
+        
+        # First try to extract explicit Q&A pairs
+        qa_pattern = r'Question:\s*([^?]+\??)\s*Answer:\s*([^Q]+)'
+        matches = re.findall(qa_pattern, self.processed_text, re.IGNORECASE)
+        
+        for question, answer in matches:
+            chunk = f"Question: {question.strip()} Answer: {answer.strip()}"
+            chunks.append(chunk)
+        
+        # If no Q&A pairs found, fall back to regular chunking
+        if not chunks:
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                length_function=len,
+                separators=[". ", "? ", "! ", ", ", " ", ""]
+            )
+            chunks = text_splitter.split_text(self.processed_text)
+        
+        self.chunks = chunks
+        return chunks
     
     def extract_qa_pairs(self):
         """

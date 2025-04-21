@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
+
 import json
 import numpy as np
 import faiss
@@ -8,164 +11,121 @@ import time
 import random
 
 class VectorDatabase:
-    def __init__(self, api_key, model="text-embedding-3-small", use_mock=False):
+    def __init__(self, api_key, dimension=1536):
         """
-        Initialize the vector database with OpenAI API key.
+        Initialize the vector database.
         
         Args:
             api_key (str): OpenAI API key
-            model (str): OpenAI embedding model to use
-            use_mock (bool): Whether to use mock embeddings (for testing without API)
+            dimension (int): Dimension of the embeddings
         """
         self.api_key = api_key
-        self.model = model
         self.client = OpenAI(api_key=api_key)
-        self.index = None
         self.documents = []
-        self.embeddings = []
-        self.use_mock = use_mock
-        self.embedding_dimension = 1536  # Default dimension for OpenAI embeddings
+        self.dimension = dimension
+        self.index = faiss.IndexFlatL2(dimension)
         
-    def generate_embedding(self, text):
-        """
-        Generate embedding for a text using OpenAI API or mock embeddings.
-        
-        Args:
-            text (str): Text to generate embedding for
-            
-        Returns:
-            list: Embedding vector
-        """
-        if self.use_mock:
-            # Generate a deterministic but random-looking embedding based on the text
-            # This is only for testing without API access
-            random.seed(hash(text) % 10000)
-            return [random.uniform(-1, 1) for _ in range(self.embedding_dimension)]
-        
-        try:
-            # Add exponential backoff for rate limiting
-            max_retries = 5
-            for attempt in range(max_retries):
-                try:
-                    response = self.client.embeddings.create(
-                        input=text,
-                        model=self.model
-                    )
-                    return response.data[0].embedding
-                except Exception as e:
-                    if "429" in str(e) and attempt < max_retries - 1:
-                        # Rate limit error, wait and retry
-                        wait_time = (2 ** attempt) + random.random()  # Exponential backoff with jitter
-                        print(f"Rate limit hit, waiting {wait_time:.2f} seconds before retry...")
-                        time.sleep(wait_time)
-                    else:
-                        # Other error or max retries reached
-                        print(f"Error generating embedding: {e}")
-                        return None
-        except Exception as e:
-            print(f"Error generating embedding: {e}")
-            return None
-    
     def add_documents(self, documents):
         """
         Add documents to the vector database.
         
         Args:
-            documents (list): List of documents to add
-            
-        Returns:
-            bool: True if successful, False otherwise
+            documents (list): List of text documents to add
         """
-        try:
-            # Generate embeddings for each document
-            new_embeddings = []
-            for i, doc in enumerate(documents):
-                print(f"Processing document {i+1}/{len(documents)}")
-                embedding = self.generate_embedding(doc)
-                if embedding:
-                    new_embeddings.append(embedding)
-                    self.documents.append(doc)
-                # Add a small delay to avoid rate limiting
-                if not self.use_mock and i % 5 == 0 and i > 0:
-                    time.sleep(1)
+        if not documents:
+            return
             
-            # Add embeddings to the existing list
-            self.embeddings.extend(new_embeddings)
+        # Clean and preprocess documents
+        cleaned_docs = []
+        for doc in documents:
+            # Remove extra whitespace and normalize
+            doc = ' '.join(doc.split())
+            # Remove any remaining special characters
+            doc = ''.join(char for char in doc if char.isprintable())
+            cleaned_docs.append(doc)
             
-            # Create or update the FAISS index
-            self._create_or_update_index()
-            
-            return True
-        except Exception as e:
-            print(f"Error adding documents: {e}")
-            return False
-    
-    def _create_or_update_index(self):
-        """
-        Create or update the FAISS index with the current embeddings.
+        # Create embeddings for the documents
+        embeddings = self.client.embeddings.create(
+            input=cleaned_docs,
+            model="text-embedding-3-small"
+        ).data
         
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            if not self.embeddings:
-                print("No embeddings to index")
-                return False
-                
-            # Convert embeddings to numpy array
-            embeddings_array = np.array(self.embeddings).astype('float32')
-            
-            # Get the dimension of the embeddings
-            dimension = embeddings_array.shape[1]
-            
-            # Create a new index
-            self.index = faiss.IndexFlatL2(dimension)
-            
-            # Add the embeddings to the index
-            self.index.add(embeddings_array)
-            
-            return True
-        except Exception as e:
-            print(f"Error creating/updating index: {e}")
-            return False
-    
+        # Convert embeddings to numpy array
+        embedding_array = np.array([emb.embedding for emb in embeddings]).astype('float32')
+        
+        # Add to FAISS index
+        self.index.add(embedding_array)
+        
+        # Store the documents
+        self.documents.extend(cleaned_docs)
+        
     def search(self, query, k=5):
         """
-        Search the vector database for similar documents.
+        Search for similar documents.
         
         Args:
-            query (str): Query text
+            query (str): Search query
             k (int): Number of results to return
             
         Returns:
             list: List of (document, score) tuples
         """
-        try:
-            if not self.index:
-                print("No index available for search")
-                return []
-                
-            # Generate embedding for the query
-            query_embedding = self.generate_embedding(query)
-            if not query_embedding:
-                return []
-            
-            # Convert to numpy array
-            query_array = np.array([query_embedding]).astype('float32')
-            
-            # Search the index
-            distances, indices = self.index.search(query_array, k)
-            
-            # Return the results
-            results = []
-            for i, idx in enumerate(indices[0]):
-                if idx < len(self.documents):
-                    results.append((self.documents[idx], float(distances[0][i])))
-            
-            return results
-        except Exception as e:
-            print(f"Error searching: {e}")
+        if not self.documents:
             return []
+            
+        # Clean up the query
+        query = query.strip()
+        if not query.lower().startswith("question:"):
+            query = "Question: " + query
+            
+        # Create embedding for the query
+        query_embedding = self.client.embeddings.create(
+            input=[query],
+            model="text-embedding-3-small"
+        ).data[0].embedding
+        
+        # Convert to numpy array
+        query_array = np.array([query_embedding]).astype('float32')
+        
+        # Search the index with more results initially
+        k_search = min(k * 3, len(self.documents))  # Search for more results than needed
+        scores, indices = self.index.search(query_array, k_search)
+        
+        # Return the documents and their scores
+        results = []
+        seen_questions = set()  # To avoid duplicate questions
+        
+        for score, idx in zip(scores[0], indices[0]):
+            if idx >= len(self.documents):  # Skip invalid indices
+                continue
+                
+            doc = self.documents[idx]
+            
+            # Extract question from the document if it's in Q&A format
+            question = None
+            if "Question:" in doc and "Answer:" in doc:
+                question = doc.split("Question:")[1].split("Answer:")[0].strip()
+                
+            # Skip if we've seen this question before
+            if question and question in seen_questions:
+                continue
+                
+            # Add question to seen set if it exists
+            if question:
+                seen_questions.add(question)
+            
+            # Improve score for exact matches and Q&A format
+            adjusted_score = score
+            if "Question:" in doc and "Answer:" in doc:
+                adjusted_score *= 0.8  # Boost Q&A format
+            if query.lower() in doc.lower():
+                adjusted_score *= 0.8  # Boost exact matches
+                
+            results.append((doc, float(adjusted_score)))
+        
+        # Sort by score and return top k
+        results.sort(key=lambda x: x[1])
+        return results[:k]
     
     def save(self, directory):
         """
@@ -183,10 +143,6 @@ class VectorDatabase:
             # Save the documents
             with open(os.path.join(directory, 'documents.json'), 'w') as f:
                 json.dump(self.documents, f)
-            
-            # Save the embeddings
-            with open(os.path.join(directory, 'embeddings.pkl'), 'wb') as f:
-                pickle.dump(self.embeddings, f)
             
             # Save the index
             if self.index:
@@ -215,11 +171,9 @@ class VectorDatabase:
                 
             # Check if files exist
             documents_path = os.path.join(directory, 'documents.json')
-            embeddings_path = os.path.join(directory, 'embeddings.pkl')
             index_path = os.path.join(directory, 'index.faiss')
             
             if not (os.path.exists(documents_path) and 
-                    os.path.exists(embeddings_path) and 
                     os.path.exists(index_path)):
                 print("Missing required files in directory")
                 return False
@@ -227,10 +181,6 @@ class VectorDatabase:
             # Load the documents
             with open(documents_path, 'r') as f:
                 self.documents = json.load(f)
-            
-            # Load the embeddings
-            with open(embeddings_path, 'rb') as f:
-                self.embeddings = pickle.load(f)
             
             # Load the index
             self.index = faiss.read_index(index_path)
@@ -271,8 +221,10 @@ class VectorDatabase:
 
 # Example usage
 if __name__ == "__main__":
-    # Get API key from environment variable or file
-    api_key = os.environ.get("OPENAI_API_KEY", "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")
+    # Get API key from environment variable
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it before running the application.")
     
     # Initialize the vector database with mock embeddings for testing
     vector_db = VectorDatabase(api_key, use_mock=True)
